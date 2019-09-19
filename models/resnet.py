@@ -92,7 +92,6 @@ class Bottleneck(nn.Module):
 
         return out
 
-
 class ResNet(nn.Module):
 
     def __init__(self, block, layers, low_dim=128):
@@ -154,10 +153,20 @@ class ResNet(nn.Module):
 
         return x
 
-def pretrained_mod(model, low_dim):
+def pretrained_mod(model, high_dim, low_dim=128):
     model.avgpool = nn.AvgPool2d(7, stride=1)
-    model.fc = nn.Linear(512, low_dim)
+    model.fc = nn.Linear(high_dim, low_dim)
     model.l2norm = Normalize(2)
+
+
+    for m in model.modules():
+        if isinstance(m, nn.Conv2d):
+            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+            m.weight.data.normal_(0, math.sqrt(2. / n))
+        elif isinstance(m, nn.BatchNorm2d):
+            m.weight.data.fill_(1)
+            m.bias.data.zero_()
+
     return model
 
 
@@ -170,7 +179,7 @@ def resnet18(pretrained=False, low_dim = 128, **kwargs):
     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
         model = models.resnet18(pretrained=True)
-        pretrained_mod(model, low_dim)
+        model = pretrained_mod(model, 512, low_dim)
     return model
 
 
@@ -196,7 +205,7 @@ def resnet50(pretrained=False, low_dim = 128, **kwargs):
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained:
         model = models.resnet50(pretrained=True)
-        pretrained_mod(model, low_dim)
+        pretrained_mod(model, 2048, low_dim)
     return model
 
 
