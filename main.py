@@ -18,7 +18,7 @@ import numpy as np
 import torchvision.models as models
 
 import datasets
-#import models
+import models
 
 from lib.utils import get_factors
 from lib.NCEAverage import NCEAverage
