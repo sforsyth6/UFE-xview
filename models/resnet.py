@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torchvision.models as models
 import math
 import torch.utils.model_zoo as model_zoo
 from lib.normalize import Normalize
@@ -153,8 +154,14 @@ class ResNet(nn.Module):
 
         return x
 
+def pretrained_mod(model, low_dim):
+    model.avgpool = nn.AvgPool2d(7, stride=1)
+    model.fc = nn.Linear(512, low_dim)
+    model.l2norm = Normalize(2)
+    return model
 
-def resnet18(pretrained=False, **kwargs):
+
+def resnet18(pretrained=False, low_dim = 128, **kwargs):
     """Constructs a ResNet-18 model.
 
     Args:
@@ -162,11 +169,12 @@ def resnet18(pretrained=False, **kwargs):
     """
     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet18']))
+        model = models.resnet18(pretrained=True)
+        pretrained_mod(model, low_dim)
     return model
 
 
-def resnet34(pretrained=False, **kwargs):
+def resnet34(pretrained=False, low_dim = 128, **kwargs):
     """Constructs a ResNet-34 model.
 
     Args:
@@ -174,11 +182,12 @@ def resnet34(pretrained=False, **kwargs):
     """
     model = ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet34']))
+        model = models.resnet34(pretrained=True)
+        pretrained_mod(model, low_dim)
     return model
 
 
-def resnet50(pretrained=False, **kwargs):
+def resnet50(pretrained=False, low_dim = 128, **kwargs):
     """Constructs a ResNet-50 model.
 
     Args:
@@ -186,11 +195,12 @@ def resnet50(pretrained=False, **kwargs):
     """
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet50']))
+        model = models.resnet50(pretrained=True)
+        pretrained_mod(model, low_dim)
     return model
 
 
-def resnet101(pretrained=False, **kwargs):
+def resnet101(pretrained=False, low_dim = 128, **kwargs):
     """Constructs a ResNet-101 model.
 
     Args:
@@ -198,11 +208,12 @@ def resnet101(pretrained=False, **kwargs):
     """
     model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet101']))
+        model = models.resnet101(pretrained=True)
+        pretrained_mod(model, low_dim)
     return model
 
 
-def resnet152(pretrained=False, **kwargs):
+def resnet152(pretrained=False, low_dim = 128, **kwargs):
     """Constructs a ResNet-152 model.
 
     Args:
@@ -210,5 +221,6 @@ def resnet152(pretrained=False, **kwargs):
     """
     model = ResNet(Bottleneck, [3, 8, 36, 3], **kwargs)
     if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet152']))
+        model = models.resnet152(pretrained=True)
+        pretrained_mod(model, low_dim)
     return model
