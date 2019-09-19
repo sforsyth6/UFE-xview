@@ -18,7 +18,7 @@ import numpy as np
 import torchvision.models as models
 
 import datasets
-import models
+#import models
 
 from lib.utils import get_factors
 from lib.NCEAverage import NCEAverage
@@ -248,21 +248,21 @@ def main():
         if epoch % 1 == 0:
             # evaluate on validation set
             #prec1 = NN(epoch, model, lemniscate, train_loader, train_loader) # was evaluating on train
-            prec1 = kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
+#            prec1 = kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
             # prec1 really should be renamed to prec5 as kNN now returns top5 score, but
             # it won't be backward's compatible as earlier models were saved with "best_prec1"
 
             # remember best prec@1 and save checkpoint
-            is_best = prec1 > best_prec1
-            best_prec1 = max(prec1, best_prec1)
+#            is_best = prec1 > best_prec1
+#            best_prec1 = max(prec1, best_prec1)
             save_checkpoint({
                 'epoch': epoch + 1,
                 'arch': args.arch,
                 'state_dict': model.state_dict(),
                 'lemniscate': lemniscate,
-                'best_prec1': best_prec1,
+#                'best_prec1': best_prec1,
                 'optimizer' : optimizer.state_dict(),
-            }, is_best)
+            })# , is_best)
 
         # train for one epoch
         train(train_loader, model, lemniscate, criterion, optimizer, epoch)
@@ -275,7 +275,7 @@ def main():
            d.days, d.seconds // 3600, (d.seconds // 60) % 60, d.seconds % 60))
 
     # evaluate KNN after last epoch
-    kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
+#    kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
 
 
 def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
@@ -323,10 +323,11 @@ def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
                    data_time=data_time, loss=loss.item()))
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+#def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
-    if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+#    if is_best:
+#        shutil.copyfile(filename, 'model_best.pth.tar')
 
 def adjust_learning_rate(optimizer, epoch):
     """Decays the learning rate according to the default schedule, or more aggressively if fine-tuning"""
