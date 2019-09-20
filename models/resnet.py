@@ -178,8 +178,13 @@ def resnet18(pretrained=False, low_dim = 128, **kwargs):
     """
     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
-        model = models.resnet18(pretrained=True)
-        model = pretrained_mod(model, 512, low_dim)
+#        model = models.resnet18(pretrained=True)
+#        model = pretrained_mod(model, 512, low_dim)
+        pmodel = models.resnet18(pretrained=True)
+        pmodel.fc = nn.Linear(512,low_dim)
+        model_dict = model.state_dict()
+        model_dict.update(pmodel.state_dict())
+        model.load_state_dict(model_dict)
     return model
 
 
@@ -191,8 +196,11 @@ def resnet34(pretrained=False, low_dim = 128, **kwargs):
     """
     model = ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
     if pretrained:
-        model = models.resnet34(pretrained=True)
-        pretrained_mod(model, low_dim)
+        pmodel = models.resnet34(pretrained=True)
+        pmodel.fc = nn.Linear(512,low_dim)
+        model_dict = model.state_dict()
+        model_dict.update(pmodel.state_dict())
+        model.load_state_dict(model_dict)
     return model
 
 
@@ -204,8 +212,11 @@ def resnet50(pretrained=False, low_dim = 128, **kwargs):
     """
     model = ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
     if pretrained:
-        model = models.resnet50(pretrained=True)
-        pretrained_mod(model, 2048, low_dim)
+        pmodel = models.resnet50(pretrained=True)
+        pmodel.fc = nn.Linear(2048,low_dim)
+        model_dict = model.state_dict()
+        model_dict.update(pmodel.state_dict())
+        model.load_state_dict(model_dict)
     return model
 
 
@@ -217,8 +228,11 @@ def resnet101(pretrained=False, low_dim = 128, **kwargs):
     """
     model = ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
     if pretrained:
-        model = models.resnet101(pretrained=True)
-        pretrained_mod(model, low_dim)
+        pmodel = models.resnet101(pretrained=True)
+        pmodel.fc = nn.Linear(2048,low_dim)
+        model_dict = model.state_dict()
+        model_dict.update(pmodel.state_dict())
+        model.load_state_dict(model_dict)
     return model
 
 
@@ -230,6 +244,9 @@ def resnet152(pretrained=False, low_dim = 128, **kwargs):
     """
     model = ResNet(Bottleneck, [3, 8, 36, 3], **kwargs)
     if pretrained:
-        model = models.resnet152(pretrained=True)
-        pretrained_mod(model, low_dim)
+        pmodel = models.resnet152(pretrained=True)
+        pmodel.fc = nn.Linear(2048,low_dim)
+        model_dict = model.state_dict()
+        model_dict.update(pmodel.state_dict())
+        model.load_state_dict(model_dict)
     return model
