@@ -17,5 +17,5 @@ class ImageFolderInstance(datasets.ImageFolder):
         if self.target_transform is not None:
             target = self.target_transform(target)
 
-        return img, target, index
+        return img, target, index, path.split('/')[-1]
 

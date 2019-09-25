@@ -4,6 +4,10 @@ import shutil
 import time
 import tqdm
 import datetime
+from shutil import copyfile
+
+from tsnecuda import TSNE
+import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -66,6 +70,10 @@ parser.add_argument('--static_loss', default=25, type=float, help='set static lo
 #parser.add_argument('--test-only', action='store_true', help='test only')
 parser.add_argument('--weight-decay', '--wd', default=1e-4, type=float, metavar='W', help='weight decay (default: 1e-4)')
 parser.add_argument('--world-size', default=1, type=int, help='number of distributed processes')
+parser.add_argument('--tsne', default=None, help='run tsne and set perplexity of tsne. Can be int or list of ints: 1,2,3,4')
+parser.add_argument('--pca', dest='pca', action='store_true', help='run pca')
+parser.add_argument('--graph_labels', default=50, type=int, help='Set number of labels to use ontop of pca/tsne plot')
+parser.add_argument('--view_knn', dest='view_knn', action='store_true', help='move KNN to a folder to be downloaded')
 
 best_prec1 = 0
 
@@ -113,9 +121,10 @@ def main():
         traindir,
         transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.ColorJitter(0.05, 0.05, 0.05, .05), #transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
+            transforms.ColorJitter(0.025, 0.025, 0.025, .025), #transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
+	    transforms.RandomRotation(45),
             transforms.ToTensor(),
             normalize,
         ]))
@@ -162,9 +171,9 @@ def main():
         ]))
 
     val_bs = [factor for factor in get_factors(len(val_dataset)) if factor < 500][-1]
-
+    val_bs = 1000
     val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=val_bs, shuffle=False,
+        val_dataset, batch_size=1000, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
     print("Validating on", len(val_dataset),  "images. Validation batch size:", val_bs)
@@ -189,10 +198,10 @@ def main():
             optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.static_loss, verbose=False)
             optimizer.load_state_dict(checkpoint['optimizer'])
             args.start_epoch = checkpoint['epoch']
-            best_prec1 = checkpoint['best_prec1']
+#           best_prec1 = checkpoint['best_prec1']
             lemniscate = checkpoint['lemniscate']
-            print("=> loaded checkpoint '{}' (epoch {}, best_prec1 {})"
-                  .format(args.resume, checkpoint['epoch'], checkpoint['best_prec1']))
+            print("=> loaded checkpoint '{}' (epoch {}, best_prec1 )"
+                  .format(args.resume, checkpoint['epoch'])) #, checkpoint['best_prec1']))
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
@@ -240,6 +249,18 @@ def main():
         return
 
     begin_train_time = datetime.datetime.now()
+
+#    my_knn(model, lemniscate, train_loader, val_loader, args.K, args.nce_t, train_dataset, val_dataset)
+    if args.tsne:
+        labels = idx_to_name(train_dataset, args.graph_labels)
+        tsne(lemniscate, args.tsne, labels)
+    if args.pca:
+        labels = idx_to_name(train_dataset, args.graph_labels)
+        pca(lemniscate, labels)
+    if args.view_knn:
+        my_knn(model, lemniscate, train_loader, val_loader, args.K, args.nce_t, train_dataset, val_dataset)
+
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -277,6 +298,96 @@ def main():
     # evaluate KNN after last epoch
 #    kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
 
+def my_knn(net, lemniscate, trainloader, testloader, K, sigma, train_dataset, val_dataset): #, recompute_memory=0): # Changed to recompute_memory in main
+    net.eval()
+    net_time = AverageMeter()
+    cls_time = AverageMeter()
+
+    testsize = testloader.dataset.__len__()
+
+    trainFeatures = lemniscate.memory.t()
+    if hasattr(trainloader.dataset, 'imgs'):
+        trainLabels = torch.LongTensor([y for (p, y) in trainloader.dataset.imgs]).cuda()
+    else:
+        trainLabels = torch.LongTensor(trainloader.dataset.train_labels).cuda()
+    C = int(trainLabels.max() + 1)
+
+    end = time.time()
+    with torch.no_grad():
+        retrieval_one_hot = torch.zeros(K, C).cuda()
+        i = 0
+        for batch_idx, (inputs, targets, indexes, path) in enumerate(tqdm.tqdm(testloader)):
+            end = time.time()
+
+            batchSize = inputs.size(0)
+            features = net(inputs)
+            net_time.update(time.time() - end)
+            end = time.time()
+
+            dist = torch.mm(features, trainFeatures)
+
+            yd, yi = dist.topk(K, dim=1, largest=True, sorted=True)
+            
+            path = '/data/images_rgb/disc/'
+            for num,name in enumerate(path):
+                os.mkdir(path + 'view/{}'.format(i))
+                for x in yi[num]:
+                    img = train_dataset.__getitem__(x)[3]
+                    copyfile(path + 'train/all/' + img, path + 'view/{}/'.format(i) + img)
+                i += 1
+   
+def idx_to_name(train_dataset, size):
+    name = {}
+    from numpy.random import randint
+    for i in range(size):
+        r = randint(177000)
+        name[r] = train_dataset.__getitem__(r)[3]
+    return name
+
+def pca(lemniscate, labels):
+    x = lemniscate.memory
+    k=2
+    x = x.data.cpu()
+    U,S,V = torch.svd(torch.t(x))
+    C = torch.mm(x, U[:,:k])
+
+    x, y = [[] for i in range(2)]
+    for c in C.numpy():
+        x.append(c[0])
+        y.append(c[1])
+    plt.scatter(x,y)
+    for idx in labels.keys():
+        label = labels[idx]
+        lx = x[idx]
+        ly = y[idx]
+        plt.annotate(label, xy = (lx, ly), xytext = (-20, 20), arrowprops=dict(arrowstyle = '->', connectionstyle='arc3,rad=0'), textcoords = 'offset points')
+    plt.savefig('pca.png')
+
+def tsne(lemniscate, perp, labels):
+
+    if isinstance(perp,int):
+        perp = [perp]
+    else:
+        perp = perp.split(',')
+
+    for p in perp:
+        x = lemniscate.memory
+        x = torch.tensor(x.data.cpu().numpy())
+        x_embedded = TSNE(n_components=2, perplexity=p, learning_rate=10).fit_transform(x)
+
+        x,y = [[] for i in range(2)]
+        for c in x_embedded:
+            x.append(c[0])
+            y.append(c[1])
+        plt.scatter(x,y)
+
+        for idx in labels.keys():
+            label = labels[idx]
+            lx = x[idx]
+            ly = y[idx]
+            plt.annotate(label, xy = (lx, ly), xytext = (-20, 20), arrowprops=dict(arrowstyle = '->', connectionstyle='arc3,rad=0'), textcoords = 'offset points')
+        plt.savefig('tsne-{}.png'.format(p))
+
 
 def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
     batch_time = AverageMeter()
@@ -288,7 +399,9 @@ def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
 
     end = time.time()
     optimizer.zero_grad()
-    for i, (input, target, index) in enumerate(train_loader):
+    for i, (input, target, index, label) in enumerate(train_loader):
+        #remove completely black images from training time
+
         # measure data loading time
         data_time.update(time.time() - end)
 
