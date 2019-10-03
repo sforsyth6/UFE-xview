@@ -8,6 +8,7 @@ from shutil import copyfile
 
 from tsnecuda import TSNE
 import matplotlib.pyplot as plt
+import faiss
 
 import torch
 import torch.nn as nn
@@ -74,6 +75,7 @@ parser.add_argument('--tsne', default=None, help='run tsne and set perplexity of
 parser.add_argument('--pca', dest='pca', action='store_true', help='run pca')
 parser.add_argument('--graph_labels', default=50, type=int, help='Set number of labels to use ontop of pca/tsne plot')
 parser.add_argument('--view_knn', dest='view_knn', action='store_true', help='move KNN to a folder to be downloaded')
+parser.add_argument('--kmeans', default =0, type=int, help='run kmeans')
 
 best_prec1 = 0
 
@@ -259,7 +261,8 @@ def main():
         pca(lemniscate, labels)
     if args.view_knn:
         my_knn(model, lemniscate, train_loader, val_loader, args.K, args.nce_t, train_dataset, val_dataset)
-
+    if args.kmeans:
+            kmeans(lemniscate, args.kmeans, 350, args.K, train_dataset)
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -287,6 +290,9 @@ def main():
 
         # train for one epoch
         train(train_loader, model, lemniscate, criterion, optimizer, epoch)
+
+        kmeans,cent = kmeans()
+        group_train(train_loader, model, lemniscate, criterion, optimizer, epoch, kmeans, cent)
 
     # print elapsed time
     end_train_time = datetime.datetime.now()
@@ -327,15 +333,66 @@ def my_knn(net, lemniscate, trainloader, testloader, K, sigma, train_dataset, va
             dist = torch.mm(features, trainFeatures)
 
             yd, yi = dist.topk(K, dim=1, largest=True, sorted=True)
-            
+    
             path = '/data/images_rgb/disc/'
-            for num,name in enumerate(path):
+
+            for num,inst in enumerate(yi):
                 os.mkdir(path + 'view/{}'.format(i))
                 for x in yi[num]:
                     img = train_dataset.__getitem__(x)[3]
                     copyfile(path + 'train/all/' + img, path + 'view/{}/'.format(i) + img)
                 i += 1
    
+
+def kmeans(lemniscate, ncentroids, niter, K, train_dataset):
+    x = lemniscate.memory
+    x = x.data.cpu().numpy()
+    d = x.shape[1]
+    kmeans = faiss.Kmeans(d, ncentroids, niter)
+    kmeans.train(x)
+    cent = kmeans.centroids
+
+    index = faiss.IndexFlatL2 (d)
+    index.add(x)
+    D, I = index.search (kmeans.centroids, K)
+    
+    distances = []
+
+    for c in cent:
+        d = []
+        for k in cent:
+            dist = np.dot(c,k)
+            cos = dist / (np.linalg.norm(c)*np.linalg.norm(k))
+            d.append(cos)
+        distances.append(d)
+
+    abs_dis = [list(map(abs, inst)) for inst in distances ]
+#    print (np.mean(abs_dis), np.max(abs_dis), np.min(abs_dis))
+
+#    for i in range(10):
+#        print (i)
+#        for num,d in enumerate(distances[i]):
+#            if d >= 0.2:
+#                print (d,num)
+
+
+    trainFeatures = lemniscate.memory.t()
+    dist = torch.mm(torch.tensor(cent).cuda() , trainFeatures)
+    yd, yi = dist.topk(K, dim=1, largest=True, sorted=True)
+
+    return kmeans, cent
+
+'''
+    path = '/data/images_rgb/disc/'
+    for num,centroid in enumerate(yi):
+        os.mkdir(path + 'view/kmeans/{}'.format(num))
+        for x in centroid:
+            img = train_dataset.__getitem__(x)[3]
+            copyfile(path + 'train/all/' + img, path + 'view/kmeans/{}/'.format(num) + img)
+    
+    return kmeans
+'''
+
 def idx_to_name(train_dataset, size):
     name = {}
     from numpy.random import randint
@@ -372,7 +429,7 @@ def tsne(lemniscate, perp, labels):
 
     for p in perp:
         x = lemniscate.memory
-        x = torch.tensor(x.data.cpu().numpy())
+        x = x.data.cpu()
         x_embedded = TSNE(n_components=2, perplexity=p, learning_rate=10).fit_transform(x)
 
         x,y = [[] for i in range(2)]
@@ -387,7 +444,55 @@ def tsne(lemniscate, perp, labels):
             ly = y[idx]
             plt.annotate(label, xy = (lx, ly), xytext = (-20, 20), arrowprops=dict(arrowstyle = '->', connectionstyle='arc3,rad=0'), textcoords = 'offset points')
         plt.savefig('tsne-{}.png'.format(p))
+        plt.clf()
 
+def group_train(train_loader, model, lemniscate, criterion, optimizer, epoch, kmeans, cent):
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses = AverageMeter()
+
+    # switch to train mode
+    model.train()
+
+    end = time.time()
+    optimizer.zero_grad()
+    for i, (input, target, index, label) in enumerate(train_loader):
+        #remove completely black images from training time
+
+        # measure data loading time
+        data_time.update(time.time() - end)
+
+        index = index.cuda(async=True)
+
+        # compute output
+        feature = model(input)
+        D, I = kmeans.index.search(feature, 1)
+        cent_num = cent.index(I)
+        output = lemniscate(feature, index, cent_numi, kmeans)
+        loss = criterion(output, index) / args.iter_size
+
+        #Backprop Apex optimizer loss
+        optimizer.backward(loss)
+
+        # measure accuracy and record loss
+        losses.update(loss.item() * args.iter_size, input.size(0))
+
+        if (i+1) % args.iter_size == 0:
+            # compute gradient and do SGD step
+            optimizer.step()
+            optimizer.zero_grad()
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if i % args.print_freq == 0:
+            print('Epoch: [{0}][{1}/{2}]\t'
+                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                  'Loss {loss:.4f}\t'.format(
+                   epoch, i, len(train_loader), batch_time=batch_time,
+                   data_time=data_time, loss=loss.item()))
 
 def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
     batch_time = AverageMeter()

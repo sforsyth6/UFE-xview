@@ -153,24 +153,30 @@ class ResNet(nn.Module):
 
         return x
 
-def pretrained_mod(model, high_dim, low_dim=128):
-    model.avgpool = nn.AvgPool2d(7, stride=1)
-    model.fc = nn.Linear(high_dim, low_dim)
-    model.l2norm = Normalize(2)
+class Identity(nn.Module):
+    def __init__(self):
+        super(Identity, self).__init__()
+        
+    def forward(self, x):
+        return x
+
+class steveNet(nn.Module):
+    def __init__(self, low_dim=128):
+        super(steveNet, self).__init__()
+        self.fc = nn.Linear(512,256)
+        self.fcf = nn.Linear(256, low_dim)
+    
+    def forward(self, x):
+        h = self.fc(x)
+        i = self.fc(x)
+        j = self.fc(x)
+        k = h + i + j
+        x = self.fcf(k)
+        
+        return x
 
 
-    for m in model.modules():
-        if isinstance(m, nn.Conv2d):
-            n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-            m.weight.data.normal_(0, math.sqrt(2. / n))
-        elif isinstance(m, nn.BatchNorm2d):
-            m.weight.data.fill_(1)
-            m.bias.data.zero_()
-
-    return model
-
-
-def resnet18(pretrained=False, low_dim = 128, **kwargs):
+def resnet18(pretrained=False, low_dim = 128, stevenet=False, **kwargs):
     """Constructs a ResNet-18 model.
 
     Args:
@@ -178,13 +184,13 @@ def resnet18(pretrained=False, low_dim = 128, **kwargs):
     """
     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
     if pretrained:
-#        model = models.resnet18(pretrained=True)
-#        model = pretrained_mod(model, 512, low_dim)
         pmodel = models.resnet18(pretrained=True)
         pmodel.fc = nn.Linear(512,low_dim)
         model_dict = model.state_dict()
         model_dict.update(pmodel.state_dict())
         model.load_state_dict(model_dict)
+    if stevenet:
+        model.fc = steveNet(128)
     return model
 
 
