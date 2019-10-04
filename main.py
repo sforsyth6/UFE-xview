@@ -75,7 +75,9 @@ parser.add_argument('--tsne', default=None, help='run tsne and set perplexity of
 parser.add_argument('--pca', dest='pca', action='store_true', help='run pca')
 parser.add_argument('--graph_labels', default=50, type=int, help='Set number of labels to use ontop of pca/tsne plot')
 parser.add_argument('--view_knn', dest='view_knn', action='store_true', help='move KNN to a folder to be downloaded')
-parser.add_argument('--kmeans', default =0, type=int, help='run kmeans')
+parser.add_argument('--kmeans', default=0, type=int, help='run kmeans')
+parser.add_argument('--tsne_grid', dest='tsne_grid', action='store_true', help='generate tsne grid of images')
+parser.add_argument('--red_data', default=1, type=float, help='percentage of dataset to use from 0-1')
 
 best_prec1 = 0
 
@@ -151,7 +153,10 @@ def main():
 
         train_sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(train_dataset), replacement=True)
     else:
-        train_sampler = None
+        data_size = len(train_dataset)
+        sub_index = np.random.randint(0,data_size,round(args.red_data*data_size))
+        sub_index.sort()
+        train_sampler = torch.utils.data.sampler.SubsetRandomSampler(sub_index)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
@@ -173,10 +178,10 @@ def main():
         ]))
 
     val_bs = [factor for factor in get_factors(len(val_dataset)) if factor < 500][-1]
-#    val_bs = 100
-#    val_loader = torch.utils.data.DataLoader(
-#        val_dataset, batch_size=1000, shuffle=False,
-#        num_workers=args.workers, pin_memory=True)
+    val_bs = 200
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset, batch_size=1000, shuffle=False,
+        num_workers=args.workers, pin_memory=True)
 
     print("Validating on", len(val_dataset),  "images. Validation batch size:", val_bs)
 
@@ -262,8 +267,14 @@ def main():
     if args.view_knn:
         my_knn(model, lemniscate, train_loader, val_loader, args.K, args.nce_t, train_dataset, val_dataset)
     if args.kmeans:
-            kmean(lemniscate, args.kmeans, 350, args.K, train_dataset)
-
+        kmean(lemniscate, args.kmeans, 350, args.K, train_dataset)
+    if args.tsne_grid:
+        from tensorflow.python.keras.preprocessing import image
+        from sklearn.manifold import TSNE
+        from lap import lapjv
+        from scipy.spatial.distance import cdist
+        tsne_grid(val_loader,model)
+    
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -303,6 +314,68 @@ def main():
 
     # evaluate KNN after last epoch
 #    kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
+
+def tsne_grid(val_loader, model):
+        # Generate t-sne-based matrix of images
+        features = []
+        images = []
+        for i, (input, _, index, names) in enumerate(val_loader):
+            index = index.cuda(async=True)
+            input_var = torch.autograd.Variable(input)
+            index_var = torch.autograd.Variable(index)
+            
+            # compute output
+            feature = model(input_var)
+            feature = feature.cpu()
+            
+            for i in range(feature.data.numpy().shape[0]):
+                images.append(input.numpy()[i,...])
+                features.append(feature.data.numpy()[i,:])
+            
+            print(len(features))
+        
+        print(np.array(images).shape)
+        print(np.array(features).shape)
+        img_collection = np.moveaxis(np.array(images),1,-1)
+        print(img_collection.shape)
+        size = 45
+        perplexity = 20
+        tsne_iter = 5000
+        print("Running tsne...")
+        tsne = TSNE(perplexity=perplexity, n_components=2, init='random', n_iter=tsne_iter)
+        X_2d = tsne.fit_transform(np.array(features)[0:size*size,:])
+        print("tsne complete.  Normalizing...")
+        X_2d -= X_2d.min(axis=0)
+        X_2d /= X_2d.max(axis=0)
+        print("Normalization complete.  Creating plot...")
+        grid = np.dstack(np.meshgrid(np.linspace(0, 1, size), np.linspace(0, 1, size))).reshape(-1, 2)
+        cost_matrix = cdist(grid, X_2d, "sqeuclidean").astype(np.float32)
+        cost_matrix = cost_matrix * (100000 / cost_matrix.max())
+        _, row_asses, col_asses = lapjv(cost_matrix)
+        grid_jv = grid[col_asses]
+        out = np.ones((size*224, size*224, 3))
+        
+        for pos, img in zip(grid_jv, img_collection[0:size*size]):
+            h_range = int(np.floor(pos[0]* (size - 1) * 224))
+            w_range = int(np.floor(pos[1]* (size - 1) * 224))
+            out[h_range:h_range + 224, w_range:w_range + 224]  = image.img_to_array(img)
+            
+        print("plot complete.  Saving gridded plot...")
+        im = image.array_to_img(out)
+        im.save('UFL_TSNE_GRID.tiff', quality=100)
+        print("Gridded plot saved!")
+        out = np.zeros((size*224, size*224, 3))
+        for pos, img in zip(X_2d, img_collection[0:size*size]):
+            h_range = int(pos[0]*(size-1)*224)
+            w_range = int(pos[1]*(size-1)*224)
+            out[h_range:h_range + 224, w_range:w_range + 224]  = image.img_to_array(img)
+        
+        print("plot complete.  Saving cloud plot...")
+        im = image.array_to_img(out)
+        im.save('UFL_TSNE_CLOUD.tiff', quality=100)
+        print("Cloud plot saved!")
+
+
 
 def my_knn(net, lemniscate, trainloader, testloader, K, sigma, train_dataset, val_dataset): #, recompute_memory=0): # Changed to recompute_memory in main
     net.eval()
