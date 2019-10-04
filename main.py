@@ -94,7 +94,7 @@ def main():
     # create model
     if args.pretrained:
         print("=> using pre-trained model '{}'".format(args.arch))
-        model = models.__dict__[args.arch](pretrained=True)
+        model = models.__dict__[args.arch](pretrained=True, low_dim=args.low_dim)
     else:
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch](low_dim=args.low_dim)
@@ -173,10 +173,10 @@ def main():
         ]))
 
     val_bs = [factor for factor in get_factors(len(val_dataset)) if factor < 500][-1]
-    val_bs = 1000
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=1000, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
+#    val_bs = 100
+#    val_loader = torch.utils.data.DataLoader(
+#        val_dataset, batch_size=1000, shuffle=False,
+#        num_workers=args.workers, pin_memory=True)
 
     print("Validating on", len(val_dataset),  "images. Validation batch size:", val_bs)
 
@@ -262,7 +262,7 @@ def main():
     if args.view_knn:
         my_knn(model, lemniscate, train_loader, val_loader, args.K, args.nce_t, train_dataset, val_dataset)
     if args.kmeans:
-            kmeans(lemniscate, args.kmeans, 350, args.K, train_dataset)
+            kmean(lemniscate, args.kmeans, 350, args.K, train_dataset)
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -291,8 +291,8 @@ def main():
         # train for one epoch
         train(train_loader, model, lemniscate, criterion, optimizer, epoch)
 
-        kmeans,cent = kmeans()
-        group_train(train_loader, model, lemniscate, criterion, optimizer, epoch, kmeans, cent)
+#        kmeans,cent = kmeans()
+#        group_train(train_loader, model, lemniscate, criterion, optimizer, epoch, kmeans, cent)
 
     # print elapsed time
     end_train_time = datetime.datetime.now()
@@ -344,7 +344,7 @@ def my_knn(net, lemniscate, trainloader, testloader, K, sigma, train_dataset, va
                 i += 1
    
 
-def kmeans(lemniscate, ncentroids, niter, K, train_dataset):
+def kmean(lemniscate, ncentroids, niter, K, train_dataset):
     x = lemniscate.memory
     x = x.data.cpu().numpy()
     d = x.shape[1]
@@ -380,18 +380,17 @@ def kmeans(lemniscate, ncentroids, niter, K, train_dataset):
     dist = torch.mm(torch.tensor(cent).cuda() , trainFeatures)
     yd, yi = dist.topk(K, dim=1, largest=True, sorted=True)
 
-    return kmeans, cent
+#    return kmeans, cent
 
-'''
-    path = '/data/images_rgb/disc/'
+
+    path = '/data/'
     for num,centroid in enumerate(yi):
-        os.mkdir(path + 'view/kmeans/{}'.format(num))
+        os.mkdir(path + 'kmeans/{}'.format(num))
         for x in centroid:
             img = train_dataset.__getitem__(x)[3]
-            copyfile(path + 'train/all/' + img, path + 'view/kmeans/{}/'.format(num) + img)
+            copyfile(path + 'train/all/' + img, path + 'kmeans/{}/'.format(num) + img)
     
     return kmeans
-'''
 
 def idx_to_name(train_dataset, size):
     name = {}
