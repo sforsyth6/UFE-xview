@@ -94,7 +94,7 @@ class Bottleneck(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, low_dim=128):
+    def __init__(self, block, layers, low_dim):
         self.inplanes = 64
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
@@ -176,13 +176,13 @@ class steveNet(nn.Module):
         return x
 
 
-def resnet18(pretrained=False, low_dim = 128, stevenet=False, **kwargs):
+def resnet18(pretrained=False, low_dim=128, stevenet=False, **kwargs):
     """Constructs a ResNet-18 model.
 
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
-    model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
+    model = ResNet(BasicBlock, [2, 2, 2, 2], low_dim, **kwargs)
     if pretrained:
         pmodel = models.resnet18(pretrained=True)
         pmodel.fc = nn.Linear(512,low_dim)
