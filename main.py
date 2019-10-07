@@ -125,7 +125,7 @@ def main():
         traindir,
         transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.ColorJitter(0.025, 0.025, 0.025, 0.025), # 0.025 transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
+            transforms.ColorJitter(0.025, 0.025, 0.025, .025), #transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
 	    transforms.RandomRotation(45),
@@ -153,6 +153,7 @@ def main():
 
         train_sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(train_dataset), replacement=True)
     else:
+        #if args.red_data is < 1, then the training is done with a subsamle of the total data. Otherwise it's the total data.
         data_size = len(train_dataset)
         sub_index = np.random.randint(0,data_size,round(args.red_data*data_size))
         sub_index.sort()
@@ -267,7 +268,7 @@ def main():
     if args.view_knn:
         my_knn(model, lemniscate, train_loader, val_loader, args.K, args.nce_t, train_dataset, val_dataset)
     if args.kmeans:
-        kmean(lemniscate, args.kmeans, 350, args.K, train_dataset)
+        kmean(lemniscate, args.kmeans, 500, args.K, train_dataset)
     if args.tsne_grid:
         from tensorflow.python.keras.preprocessing import image
         from sklearn.manifold import TSNE
@@ -428,9 +429,10 @@ def kmean(lemniscate, ncentroids, niter, K, train_dataset):
     index = faiss.IndexFlatL2 (d)
     index.add(x)
     D, I = index.search (kmeans.centroids, K)
-    
-    distances = []
 
+
+#give cosine similarity between each kmeans centroid
+    distances = []
     for c in cent:
         d = []
         for k in cent:
@@ -440,30 +442,96 @@ def kmean(lemniscate, ncentroids, niter, K, train_dataset):
         distances.append(d)
 
     abs_dis = [list(map(abs, inst)) for inst in distances ]
-#    print (np.mean(abs_dis), np.max(abs_dis), np.min(abs_dis))
+    print (np.mean(abs_dis), np.max(abs_dis), np.min(abs_dis))
 
-#    for i in range(10):
-#        print (i)
-#        for num,d in enumerate(distances[i]):
-#            if d >= 0.2:
-#                print (d,num)
+    for i in range(20):
+        print (i)
+        for num,d in enumerate(distances[i]):
+            if d >= 0.2:
+                print (d,num)
 
-
+#get cosine similarity between the first KNN of each centroid with the rest of the KNN
     trainFeatures = lemniscate.memory.t()
     dist = torch.mm(torch.tensor(cent).cuda() , trainFeatures)
     yd, yi = dist.topk(K, dim=1, largest=True, sorted=True)
 
-#    return kmeans, cent
+    distances = []
+    for num, centroid in enumerate(yi):
+        if num >= 20:
+            break
+        d = []
+        for n1, h in enumerate(centroid):
+            for n1,j in enumerate(centroid):
+                xx = x[h]
+                yy = x[j]
+                dist = np.dot(xx,yy)
+                cos = dist / (np.linalg.norm(xx)*np.linalg.norm(yy))
+                d.append(cos)
+            distances.append(d)
+            break
+    for i,d in enumerate(distances):
+        print (i,d)
 
+#Gives the cluster and distance from each image if the cosine distance of th eimage and centroid is > 0.2
+    distances = []
+    for num, centroid in enumerate(yi):
+        if num >= 10:
+            break
+        dis = []
+        for n1, h in enumerate(centroid):
+            d = []
+            for n,c in enumerate(cent):
+                xx = x[h]
+                dist = np.dot(xx,c)
+                cos = dist / (np.linalg.norm(xx)*np.linalg.norm(c))
+                if cos >= 0.2:
+                    d.append([n,cos])
+            dis.append(d)
+        distances.append(dis)
+    for i,d in enumerate(distances):
+        print ('Cat {}'.format(i))
+        for num,im in enumerate(d):
+            print('image {}'.format(num))
+            print (im)
+
+#averages of knn to each centroid comparred to each image with cosine
+#    av_knn_dist = []
+#    for num, centroid in enumerate(yi):
+#        img = x[centroid[:4].data.cpu()]
+#        av_knn_dist.append(np.mean(img, axis=0))
+#    distances = []
+#    for num, centroid in enumerate(yi):
+#        if num >= 10:
+#            break
+#        dis = []
+#        for n1, h in enumerate(centroid):
+#            xx = x[h]
+#            d = []
+#            for n,a in enumerate(av_knn_dist):
+#                dist = np.dot(xx,a)
+#                cos = dist / (np.linalg.norm(xx)*np.linalg.norm(a))
+#                if cos >= .2:
+#                    d.append([n,cos])
+#            dis.append(d)
+#        distances.append(dis)
+
+#    for i,d in enumerate(distances):
+#        print ('Cat {}'.format(i))
+#        for num,im in enumerate(d):
+#            print('image {}'.format(num))
+#            print (im)
+
+#    return kmeans, cent
 
     path = '/data/'
     for num,centroid in enumerate(yi):
         os.mkdir(path + 'kmeans/{}'.format(num))
-        for x in centroid:
+        for n,x in enumerate(centroid):
             img = train_dataset.__getitem__(x)[3]
-            copyfile(path + 'train/all/' + img, path + 'kmeans/{}/'.format(num) + img)
+            copyfile(path + 'train/all/' + img, path + 'kmeans/{0}/{1}'.format(num,n))
     
     return kmeans
+
 
 def idx_to_name(train_dataset, size):
     name = {}
@@ -475,6 +543,7 @@ def idx_to_name(train_dataset, size):
 
 def pca(lemniscate, labels):
     x = lemniscate.memory
+    niter=2
     k=2
     x = x.data.cpu()
     U,S,V = torch.svd(torch.t(x))
