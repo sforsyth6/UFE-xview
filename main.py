@@ -125,7 +125,7 @@ def main():
         traindir,
         transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.ColorJitter(0.75, 0.025, 0.025, .025), #transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
+            transforms.ColorJitter(0.4, 0.4, 0.4, 0.4), # 0.025 transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
 	    transforms.RandomRotation(45),
