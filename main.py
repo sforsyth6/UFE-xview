@@ -78,6 +78,8 @@ parser.add_argument('--view_knn', dest='view_knn', action='store_true', help='mo
 parser.add_argument('--kmeans', default=0, type=int, help='run kmeans')
 parser.add_argument('--tsne_grid', dest='tsne_grid', action='store_true', help='generate tsne grid of images')
 parser.add_argument('--red_data', default=1, type=float, help='percentage of dataset to use from 0-1')
+parser.add_argument('--color_jit', default=0.025, type=float, help='values for color jitter transform')
+
 
 best_prec1 = 0
 
@@ -121,11 +123,12 @@ def main():
                                      std=[0.173, 0.143, 0.127])
 
     print("Creating datasets")
+    cj = args.color_jit
     train_dataset = datasets.ImageFolderInstance(
         traindir,
         transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.ColorJitter(0.025, 0.025, 0.025, .025), #transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
+            transforms.ColorJitter(cj, cj, cj, cj), #transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
 	    transforms.RandomRotation(45),
