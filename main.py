@@ -10,6 +10,13 @@ from tsnecuda import TSNE
 import matplotlib.pyplot as plt
 import faiss
 
+from tensorflow.python.keras.preprocessing import image
+from sklearn.manifold import TSNE
+from lap import lapjv
+from scipy.spatial.distance import cdist
+
+from scipy.cluster.hierarchy import linkage, dendrogram
+
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -79,7 +86,8 @@ parser.add_argument('--kmeans', default=0, type=int, help='run kmeans')
 parser.add_argument('--tsne_grid', dest='tsne_grid', action='store_true', help='generate tsne grid of images')
 parser.add_argument('--red_data', default=1, type=float, help='percentage of dataset to use from 0-1')
 parser.add_argument('--color_jit', default=0.025, type=float, help='values for color jitter transform')
-
+parser.add_argument('--h_cluster', action='store_true', help='run hierarichal clustering')
+parser.add_argument('--select', action='store_true', help='run hierarichal clustering')
 
 best_prec1 = 0
 
@@ -182,9 +190,9 @@ def main():
         ]))
 
     val_bs = [factor for factor in get_factors(len(val_dataset)) if factor < 500][-1]
-    val_bs = 200
+    val_bs = 100
     val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=1000, shuffle=False,
+        val_dataset, batch_size=val_bs, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
     print("Validating on", len(val_dataset),  "images. Validation batch size:", val_bs)
@@ -273,16 +281,36 @@ def main():
     if args.kmeans:
         kmean(lemniscate, args.kmeans, 500, args.K, train_dataset)
     if args.tsne_grid:
-        from tensorflow.python.keras.preprocessing import image
-        from sklearn.manifold import TSNE
-        from lap import lapjv
-        from scipy.spatial.distance import cdist
         tsne_grid(val_loader,model)
+    if args.h_cluster:
+        respred = torch.tensor([]).cuda()
+        lab, idx = [[] for i in range(2)]
+        num = 0
+        for p,index,label in pred:
+            respred = torch.cat((respred,p))
+            if num == 0:
+                lab = label
+            else:
+                lab += label
+            idx.append(index)
+            num+=1
+        h_cluster(lemniscate, respred, lab, idx)
     
+    if args.select:
+        min_idx = selection(lemniscate, train_dataset)
+
+        train_sampler = torch.utils.data.sampler.SubsetRandomSampler(min_idx)
+
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+            num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+
+    pred = []
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch)
+ 
 
         if epoch % 1 == 0:
             # evaluate on validation set
@@ -304,7 +332,7 @@ def main():
             })# , is_best)
 
         # train for one epoch
-        train(train_loader, model, lemniscate, criterion, optimizer, epoch)
+        train(train_loader, model, lemniscate, criterion, optimizer, epoch, pred)
 
 #        kmeans,cent = kmeans()
 #        group_train(train_loader, model, lemniscate, criterion, optimizer, epoch, kmeans, cent)
@@ -318,6 +346,58 @@ def main():
 
     # evaluate KNN after last epoch
 #    kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
+
+def selection(lemniscate, train_dataset):
+    data = lemniscate.memory
+    cos = nn.CosineSimilarity(dim=0)
+    rand = np.random.randint(0,len(data), size=round(len(data)/1000.0))
+    sub_data = data[rand,:]
+    min_idx = []
+    for ran in range(50):
+        r = np.random.randint(0,len(sub_data))
+        cos_list = []
+        indx = []
+        for idx,x in enumerate(sub_data):
+            cos_list.append(cos(sub_data[r,:],x))
+            indx.append([rand[r],rand[idx]])
+        minn = min(cos_list)
+        min_idx.append(indx[cos_list.index(minn)])
+        print (minn, indx[cos_list.index(minn)])
+    
+    final_min = []
+    for x in min_idx:
+        for y in x:
+            final_min.append(y)
+
+
+    return final_min
+
+'''
+    path = '/data/images_rgb/disc/'
+
+    for num,inst in enumerate(min_idx):
+        os.mkdir(path + 'seperate/{}'.format(num))
+        for x in inst:
+            print (x)
+            img = train_dataset.__getitem__(x)[3]
+            copyfile(path + 'train/all/' + img, path + 'seperate/{}/'.format(num) + img)
+'''
+
+
+def h_cluster(lemniscate, p, lab, idx):
+    data = p
+    size = round(len(data)/500.0)
+    rand = np.random.randint(0,len(data), size=size)
+    data = data[rand,:].data.cpu().numpy()
+    lab = np.array(lab)
+    lab = lab[rand]
+    hc = linkage(data, metric='cos')
+    plt.figure()
+    den = dendrogram(hc)
+    plt.savefig('dend-{}.png'.format(size))
+    with open('out.txt') as f:
+        for i,l in enumerate(lab):
+            f.write('{0},{1}'.format(i,l) +'\n')
 
 def tsne_grid(val_loader, model):
         # Generate t-sne-based matrix of images
@@ -366,7 +446,7 @@ def tsne_grid(val_loader, model):
             
         print("plot complete.  Saving gridded plot...")
         im = image.array_to_img(out)
-        im.save('UFL_TSNE_GRID.tiff', quality=100)
+        im.save('UFL_TSNE_GRID.jpeg', quality=100)
         print("Gridded plot saved!")
         out = np.zeros((size*224, size*224, 3))
         for pos, img in zip(X_2d, img_collection[0:size*size]):
@@ -376,7 +456,7 @@ def tsne_grid(val_loader, model):
         
         print("plot complete.  Saving cloud plot...")
         im = image.array_to_img(out)
-        im.save('UFL_TSNE_CLOUD.tiff', quality=100)
+        im.save('UFL_TSNE_CLOUD.jpeg', quality=100)
         print("Cloud plot saved!")
 
 
@@ -590,7 +670,7 @@ def tsne(lemniscate, perp, labels):
         plt.savefig('tsne-{}.png'.format(p))
         plt.clf()
 
-def group_train(train_loader, model, lemniscate, criterion, optimizer, epoch, kmeans, cent):
+def train(train_loader, model, lemniscate, criterion, optimizer, epoch, pred):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -610,57 +690,9 @@ def group_train(train_loader, model, lemniscate, criterion, optimizer, epoch, km
 
         # compute output
         feature = model(input)
-        D, I = kmeans.index.search(feature, 1)
-        cent_num = cent.index(I)
-        output = lemniscate(feature, index, cent_numi, kmeans)
-        loss = criterion(output, index) / args.iter_size
-
-        #Backprop Apex optimizer loss
-        optimizer.backward(loss)
-
-        # measure accuracy and record loss
-        losses.update(loss.item() * args.iter_size, input.size(0))
-
-        if (i+1) % args.iter_size == 0:
-            # compute gradient and do SGD step
-            optimizer.step()
-            optimizer.zero_grad()
-
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        if i % args.print_freq == 0:
-            print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss:.4f}\t'.format(
-                   epoch, i, len(train_loader), batch_time=batch_time,
-                   data_time=data_time, loss=loss.item()))
-
-def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    losses = AverageMeter()
-
-    # switch to train mode
-    model.train()
-
-    end = time.time()
-    optimizer.zero_grad()
-    for i, (input, target, index, label) in enumerate(train_loader):
-        #remove completely black images from training time
-
-        # measure data loading time
-        data_time.update(time.time() - end)
-
-        index = index.cuda(async=True)
-
-        # compute output
-        feature = model(input)
+        pred.append([feature.data,index,label])
         output = lemniscate(feature, index)
         loss = criterion(output, index) / args.iter_size
-
         #Backprop Apex optimizer loss
         optimizer.backward(loss)
 
