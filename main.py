@@ -10,12 +10,14 @@ from tsnecuda import TSNE
 import matplotlib.pyplot as plt
 import faiss
 
-from tensorflow.python.keras.preprocessing import image
-from sklearn.manifold import TSNE
-from lap import lapjv
-from scipy.spatial.distance import cdist
+#from tensorflow.python.keras.preprocessing import image
+#from sklearn.manifold import TSNE
+#from lap import lapjv
+#from scipy.spatial.distance import cdist
 
 from scipy.cluster.hierarchy import linkage, dendrogram
+
+#from torch.autograd import Variable
 
 import torch
 import torch.nn as nn
@@ -88,6 +90,14 @@ parser.add_argument('--red_data', default=1, type=float, help='percentage of dat
 parser.add_argument('--color_jit', default=0.025, type=float, help='values for color jitter transform')
 parser.add_argument('--h_cluster', action='store_true', help='run hierarichal clustering')
 parser.add_argument('--select', action='store_true', help='run hierarichal clustering')
+parser.add_argument('--mv_data', action='store_true', help='run hierarichal clustering')
+parser.add_argument('--kmverbose', action='store_true', help='run hierarichal clustering')
+parser.add_argument('--select_thresh', default = 0.95, type=float)
+parser.add_argument('--select_size', default=0, type=float)
+parser.add_argument('--select_save', action='store_true')
+parser.add_argument('--select_load', action='store_true')
+parser.add_argument('--select_num', default=50, type=int)
+parser.add_argument('--kmeans_opt', action='store_true')
 
 best_prec1 = 0
 
@@ -219,6 +229,8 @@ def main():
             args.start_epoch = checkpoint['epoch']
 #           best_prec1 = checkpoint['best_prec1']
             lemniscate = checkpoint['lemniscate']
+            if args.select_load:
+                pred = checkpoint['prediction']
             print("=> loaded checkpoint '{}' (epoch {}, best_prec1 )"
                   .format(args.resume, checkpoint['epoch'])) #, checkpoint['best_prec1']))
         else:
@@ -279,25 +291,87 @@ def main():
     if args.view_knn:
         my_knn(model, lemniscate, train_loader, val_loader, args.K, args.nce_t, train_dataset, val_dataset)
     if args.kmeans:
-        kmean(lemniscate, args.kmeans, 500, args.K, train_dataset)
+        kmeans,yi = kmean(lemniscate, args.kmeans, 500, args.K, train_dataset)
+        D, I = kmeans.index.search(lemniscate.memory.data.cpu().numpy(), 1)
+
+        cent_group = {}
+        data_cent = {}
+        for n,i in enumerate(I):
+            if i[0] not in cent_group.keys():
+                cent_group[i[0]] = []
+            cent_group[i[0]].append(n)
+        data_cent[n] = i[0]
+
+        train_sampler = torch.utils.data.sampler.SubsetRandomSampler(cent_group[0])
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+            num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+        
+        lemniscate = NCEAverage(args.low_dim, ndata, args.nce_k, args.nce_t, args.nce_m)
+        criterion = NCECriterion(ndata).cuda()
+
     if args.tsne_grid:
         tsne_grid(val_loader,model)
     if args.h_cluster:
-        respred = torch.tensor([]).cuda()
-        lab, idx = [[] for i in range(2)]
-        num = 0
-        for p,index,label in pred:
-            respred = torch.cat((respred,p))
-            if num == 0:
-                lab = label
-            else:
-                lab += label
-            idx.append(index)
-            num+=1
-        h_cluster(lemniscate, respred, lab, idx)
+        for size in range(2,3):
+    #        size = 20
+            kmeans,topk =  kmean(lemniscate, size, 500, 10, train_dataset)
+            respred = torch.tensor([]).cuda()
+            lab, idx = [[] for i in range(2)]
+            num = 0
+            '''
+            for p,index,label in pred:
+                respred = torch.cat((respred,p))
+                if num == 0:
+                    lab = label
+                else:
+                    lab += label
+                idx.append(index)
+                num+=1
+            '''
+            h_cluster(lemniscate, train_dataset, kmeans, topk, size) #, respred, lab, idx)
+   
+#    kmeans_opt(lemniscate, 5)
     
     if args.select:
-        min_idx = selection(lemniscate, train_dataset)
+        if not args.select_load:
+            pred = [] 
+
+            if args.select_size:
+                size = int(args.select_size*ndata)
+            else:
+                size = round(ndata/100.0)
+            
+            sub_sample = np.random.randint(0,ndata, size=size)
+            train_sampler = torch.utils.data.sampler.SubsetRandomSampler(sub_sample)
+            train_loader = torch.utils.data.DataLoader(
+                train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+                num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+
+            pred = div_train(train_loader, model, 0, pred)
+
+        pred_features = []
+        pred_labels = []
+        pred_idx = []
+
+        for inst in pred:
+            feat,idx,lab = list(inst)
+            pred_features.append(feat)
+            pred_labels.append(lab)
+            pred_idx.append(idx.data.cpu())
+        
+        if args.select_save:
+
+            save_checkpoint({
+                'epoch': args.start_epoch,
+                'arch': args.arch,
+                'state_dict': model.state_dict(),
+                'prediction':pred,
+                'lemniscate': lemniscate,
+                'optimizer' : optimizer.state_dict(),
+            }, 'select.pth.tar')
+
+        min_idx = selection(pred_features,pred_idx,train_dataset,args.select_num,args.select_thresh)
 
         train_sampler = torch.utils.data.sampler.SubsetRandomSampler(min_idx)
 
@@ -305,7 +379,10 @@ def main():
             train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
             num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
-    pred = []
+    if args.kmeans_opt:
+        kmeans_opt(lemniscate,500)
+
+		 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -332,7 +409,7 @@ def main():
             })# , is_best)
 
         # train for one epoch
-        train(train_loader, model, lemniscate, criterion, optimizer, epoch, pred)
+        train(train_loader, model, lemniscate, criterion, optimizer, epoch)
 
 #        kmeans,cent = kmeans()
 #        group_train(train_loader, model, lemniscate, criterion, optimizer, epoch, kmeans, cent)
@@ -347,28 +424,120 @@ def main():
     # evaluate KNN after last epoch
 #    kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
 
-def selection(lemniscate, train_dataset):
-    data = lemniscate.memory
+def kmeans_opt(lemniscate, epoch):
+    x = lemniscate.memory
+    x = x.data.cpu().numpy()
+    d = x.shape[1]
+
+
+#    ncentroids = Variable(torch.randint(1,1000, size=(1,1)).type(torch.FloatTensor) , requires_grad=True)
+#    niter = Variable(torch.randint(1,1000,size=(1,1)).type(torch.FloatTensor), requires_grad=True)
+
+#    optimizer = torch.optim.Adam([ncentroids,niter], lr=0.01)
+    low_loss = 0
+
+    for i in range(2,epoch): 
+        if i % 10 == 0:
+            print (i)
+        kmeans = faiss.Kmeans(d, i, 500, spherical=True)
+        kmeans.train(x)
+
+        loss = kmeans_loss(lemniscate,kmeans)
+        if loss < low_loss:
+            low_loss = loss
+            print (i,loss)
+
+
+'''
+    for e in range(epoch):
+        optimizer.zero_grad()
+
+
+        kmeans = faiss.Kmeans(d, int(ncentroids.data.numpy()[0][0]), int(niter.data.numpy()[0][0]), spherical=True)
+        kmeans.train(x)
+
+        loss = kmeans_loss(lemniscate,kmeans)
+        loss.backward()
+
+        optimizer.step()
+
+        print (loss)
+'''
+
+
+def kmeans_loss(lemniscate, kmeans):
+    data = lemniscate.memory.data.cpu().numpy()
+    cents = kmeans.centroids
+    D, I = kmeans.index.search(data, 1)
+
+
+    cent_group = {}
+    data_cent = {}
+    for n,i in enumerate(I):
+        if i[0] not in cent_group.keys():
+            cent_group[i[0]] = []
+        cent_group[i[0]].append(n)
+        data_cent[n] = i[0]
+
+    inner_groupsim = []
     cos = nn.CosineSimilarity(dim=0)
-    rand = np.random.randint(0,len(data), size=round(len(data)/1000.0))
-    sub_data = data[rand,:]
+    for c in cent_group.keys():
+        centroid = torch.tensor(cents[c])
+        dis = []
+        for idx in cent_group[c]:
+            x = torch.tensor(data[idx])
+            out = cos(x,centroid)
+            dis.append(out)
+        dis = torch.tensor(dis)
+        inner_groupsim.append(dis.mean())
+    inner_groupsim = torch.tensor(inner_groupsim)
+
+
+    outer_groupsim = []
+    data_idxs = np.array(list(data_cent.keys()))
+    r = np.random.randint(0,len(data_idxs), size=500)
+    dat = data_idxs[r]
+    for idx in dat:
+        id_cent = data_cent[idx]
+        sim_cent = list(cent_group.keys())
+        sim_cent.remove(id_cent)
+        x = torch.tensor(data[idx])
+        dis = []
+        for s in sim_cent:
+            centroid = torch.tensor(cents[s])
+            out = cos(x,centroid)
+            dis.append(out)
+        dis = torch.tensor(dis)
+        outer_groupsim.append(torch.max(dis))
+    outer_groupsim = torch.tensor(outer_groupsim)
+    
+    loss = -inner_groupsim.mean() + outer_groupsim.mean()
+    return loss
+
+
+def selection(pred,pred_idx,train_dataset,num_select,thresh):
+    sub_data = pred
+    cos = nn.CosineSimilarity(dim=0)
+#    rand = np.random.randint(0,len(data), size=round(len(data)/100.0))
+#    sub_data = data[rand,:]
     min_idx = []
-    for ran in range(50):
+    for ran in range(num_select):
         r = np.random.randint(0,len(sub_data))
         cos_list = []
         indx = []
         for idx,x in enumerate(sub_data):
-            cos_list.append(cos(sub_data[r,:],x))
-            indx.append([rand[r],rand[idx]])
-        minn = min(cos_list)
+            cos_list.append(cos(sub_data[r],x))
+            indx.append([pred_idx[r],pred_idx[idx]])
+        minn = min(cos_list, key=lambda x:abs(x-thresh))
+#        minn = min(cos_list)
         min_idx.append(indx[cos_list.index(minn)])
-        print (minn, indx[cos_list.index(minn)])
+
+        print (minn, train_dataset.__getitem__(indx[cos_list.index(minn)][0])[3], train_dataset.__getitem__(indx[cos_list.index(minn)][1])[3])
     
     final_min = []
     for x in min_idx:
         for y in x:
             final_min.append(y)
-
 
     return final_min
 
@@ -384,20 +553,25 @@ def selection(lemniscate, train_dataset):
 '''
 
 
-def h_cluster(lemniscate, p, lab, idx):
-    data = p
-    size = round(len(data)/500.0)
-    rand = np.random.randint(0,len(data), size=size)
-    data = data[rand,:].data.cpu().numpy()
-    lab = np.array(lab)
-    lab = lab[rand]
-    hc = linkage(data, metric='cos')
+def h_cluster(lemniscate,train_dataset, kmeans, topk, size):
+    x = lemniscate.memory.data.cpu().numpy()
+    d = x.shape[1]
+#    size = round(len(data)/1000.0)
+#    size = 1000
+#    rand = np.random.randint(0,len(data), size=size)
+#    data = data[rand,:].data.cpu().numpy()
+#    lab = np.array(lab)
+#    lab = lab[rand]
+    data = kmeans.centroids
+    hc = linkage(data,metric='cos',method='complete')
     plt.figure()
     den = dendrogram(hc)
-    plt.savefig('dend-{}.png'.format(size))
-    with open('out.txt') as f:
-        for i,l in enumerate(lab):
-            f.write('{0},{1}'.format(i,l) +'\n')
+    print (den['ivl'])
+    plt.savefig('dend-{}.png'.format(size), dbi=600)
+
+    for n,i in enumerate(topk):
+        label = train_dataset.__getitem__(i[0])[3]
+        print ('{0},{1}'.format(n,label))
 
 def tsne_grid(val_loader, model):
         # Generate t-sne-based matrix of images
@@ -505,77 +679,78 @@ def kmean(lemniscate, ncentroids, niter, K, train_dataset):
     x = lemniscate.memory
     x = x.data.cpu().numpy()
     d = x.shape[1]
-    kmeans = faiss.Kmeans(d, ncentroids, niter)
+    kmeans = faiss.Kmeans(d, ncentroids, niter, spherical=True)
     kmeans.train(x)
     cent = kmeans.centroids
 
-    index = faiss.IndexFlatL2 (d)
+    index = faiss.IndexFlatL2(d)
     index.add(x)
     D, I = index.search (kmeans.centroids, K)
 
+    if args.kmverbose:
+        #give cosine similarity between each kmeans centroid
+        distances = []
+        for c in cent:
+            d = []
+            for k in cent:
+                dist = np.dot(c,k)
+                cos = dist / (np.linalg.norm(c)*np.linalg.norm(k))
+                d.append(cos)
+            distances.append(d)
 
-#give cosine similarity between each kmeans centroid
-    distances = []
-    for c in cent:
-        d = []
-        for k in cent:
-            dist = np.dot(c,k)
-            cos = dist / (np.linalg.norm(c)*np.linalg.norm(k))
-            d.append(cos)
-        distances.append(d)
+        abs_dis = [list(map(abs, inst)) for inst in distances ]
+        print (np.mean(abs_dis), np.max(abs_dis), np.min(abs_dis))
 
-    abs_dis = [list(map(abs, inst)) for inst in distances ]
-    print (np.mean(abs_dis), np.max(abs_dis), np.min(abs_dis))
-
-    for i in range(20):
-        print (i)
-        for num,d in enumerate(distances[i]):
-            if d >= 0.2:
-                print (d,num)
+        for i in range(20):
+            print (i)
+            for num,d in enumerate(distances[i]):
+                if d >= 0.2:
+                    print (d,num)
 
 #get cosine similarity between the first KNN of each centroid with the rest of the KNN
     trainFeatures = lemniscate.memory.t()
     dist = torch.mm(torch.tensor(cent).cuda() , trainFeatures)
     yd, yi = dist.topk(K, dim=1, largest=True, sorted=True)
 
-    distances = []
-    for num, centroid in enumerate(yi):
-        if num >= 20:
-            break
-        d = []
-        for n1, h in enumerate(centroid):
-            for n1,j in enumerate(centroid):
-                xx = x[h]
-                yy = x[j]
-                dist = np.dot(xx,yy)
-                cos = dist / (np.linalg.norm(xx)*np.linalg.norm(yy))
-                d.append(cos)
-            distances.append(d)
-            break
-    for i,d in enumerate(distances):
-        print (i,d)
-
-#Gives the cluster and distance from each image if the cosine distance of th eimage and centroid is > 0.2
-    distances = []
-    for num, centroid in enumerate(yi):
-        if num >= 10:
-            break
-        dis = []
-        for n1, h in enumerate(centroid):
+    if args.kmverbose:
+        distances = []
+        for num, centroid in enumerate(yi):
+            if num >= 20:
+                break
             d = []
-            for n,c in enumerate(cent):
-                xx = x[h]
-                dist = np.dot(xx,c)
-                cos = dist / (np.linalg.norm(xx)*np.linalg.norm(c))
-                if cos >= 0.2:
-                    d.append([n,cos])
-            dis.append(d)
-        distances.append(dis)
-    for i,d in enumerate(distances):
-        print ('Cat {}'.format(i))
-        for num,im in enumerate(d):
-            print('image {}'.format(num))
-            print (im)
+            for n1, h in enumerate(centroid):
+                for n1,j in enumerate(centroid):
+                    xx = x[h]
+                    yy = x[j]
+                    dist = np.dot(xx,yy)
+                    cos = dist / (np.linalg.norm(xx)*np.linalg.norm(yy))
+                    d.append(cos)
+                distances.append(d)
+                break
+        for i,d in enumerate(distances):
+            print (i,d)
+
+    #Gives the cluster and distance from each image if the cosine distance of th eimage and centroid is > 0.2
+        distances = []
+        for num, centroid in enumerate(yi):
+            if num == 20:
+                break
+            dis = []
+            for n1, h in enumerate(centroid):
+                d = []
+                for n,c in enumerate(cent):
+                    xx = x[h]
+                    dist = np.dot(xx,c)
+                    cos = dist / (np.linalg.norm(xx)*np.linalg.norm(c))
+                    if cos >= 0.2:
+                        d.append([n,cos])
+                dis.append(d)
+            distances.append(dis)
+        for i,d in enumerate(distances):
+            print ('Cat {}'.format(i))
+            for num,im in enumerate(d):
+                print('image {}'.format(num))
+                print (im)
 
 #averages of knn to each centroid comparred to each image with cosine
 #    av_knn_dist = []
@@ -606,14 +781,15 @@ def kmean(lemniscate, ncentroids, niter, K, train_dataset):
 
 #    return kmeans, cent
 
-    path = '/data/'
-    for num,centroid in enumerate(yi):
-        os.mkdir(path + 'kmeans/{}'.format(num))
-        for n,x in enumerate(centroid):
-            img = train_dataset.__getitem__(x)[3]
-            copyfile(path + 'train/all/' + img, path + 'kmeans/{0}/{1}'.format(num,n))
+    if args.mv_data:
+        path = '/data/'
+        for num,centroid in enumerate(yi):
+            os.mkdir(path + 'kmeans/{}'.format(num))
+            for n,x in enumerate(centroid):
+                img = train_dataset.__getitem__(x)[3]
+                copyfile(path + 'train/all/' + img, path + 'kmeans/{0}/{1}'.format(num,n))
     
-    return kmeans
+    return kmeans,yi
 
 
 def idx_to_name(train_dataset, size):
@@ -670,7 +846,55 @@ def tsne(lemniscate, perp, labels):
         plt.savefig('tsne-{}.png'.format(p))
         plt.clf()
 
-def train(train_loader, model, lemniscate, criterion, optimizer, epoch, pred):
+def div_train(train_loader, model, epoch, pred):
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses = AverageMeter()
+
+    # switch to train mode
+#    model.train()
+
+    end = time.time()
+#    optimizer.zero_grad()
+    for i, (input, target, index, label) in enumerate(train_loader):
+        #remove completely black images from training time
+
+        # measure data loading time
+        data_time.update(time.time() - end)
+
+        index = index.cuda(async=True)                                                                          
+        # compute output
+        feature = model(input)
+        for x in list(zip(feature.data,index,label)):
+            pred.append(x)
+#        output = lemniscate(feature, index)
+#        loss = criterion(output, index) / args.iter_size
+#       loss = 0.0
+        #Backprop Apex optimizer loss
+#        optimizer.backward(loss)
+
+        # measure accuracy and record loss
+#        losses.update(loss.item() * args.iter_size, input.size(0))
+
+#        if (i+1) % args.iter_size == 0:
+            # compute gradient and do SGD step
+#            optimizer.step()
+#            optimizer.zero_grad()
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if i % args.print_freq == 0:
+            print('Epoch: [{0}][{1}/{2}]\t'
+                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'.format(
+			epoch, i, len(train_loader), batch_time=batch_time,
+			data_time=data_time))
+    return pred
+
+
+def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -690,7 +914,6 @@ def train(train_loader, model, lemniscate, criterion, optimizer, epoch, pred):
 
         # compute output
         feature = model(input)
-        pred.append([feature.data,index,label])
         output = lemniscate(feature, index)
         loss = criterion(output, index) / args.iter_size
         #Backprop Apex optimizer loss
