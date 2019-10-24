@@ -3,6 +3,8 @@ from torch.autograd import Function
 from torch import nn
 from lib.alias_multinomial import AliasMethod
 import math
+import numpy as np
+from random import gauss
 
 class NCEFunction(Function):
     @staticmethod
@@ -77,8 +79,9 @@ class NCEFunction(Function):
         weight_pos = weight.select(1, 0).resize_as_(x)
         weight_pos.mul_(momentum)
         weight_pos.add_(torch.mul(x.data, 1-momentum))
-        w_norm = weight_pos.pow(2).sum(1, keepdim=True).pow(0.5)
-        updated_weight = weight_pos.div(w_norm)
+#        w_norm = weight_pos.pow(2).sum(1, keepdim=True).pow(0.5)
+        updated_weight = weight_pos
+#        updated_weight = weight_pos.div(w_norm)
         memory.index_copy_(0, y, updated_weight)
         
         return gradInput, None, None, None, None
@@ -95,7 +98,17 @@ class NCEAverage(nn.Module):
 
         self.register_buffer('params',torch.tensor([K, T, -1, momentum]));
         stdv = 1. / math.sqrt(inputSize/3)
-        self.register_buffer('memory', torch.rand(outputSize, inputSize).mul_(2*stdv).add_(-stdv))
+        memory = []
+
+        for v in range(inputSize):
+             r = np.array([gauss(0, math.sqrt(1/float(v+1))) for i in range(outputSize)])
+             if len(memory) == 0:
+                 memory = r
+             else:
+                memory = np.vstack((memory,r))
+        memory = torch.tensor(memory.T).type(torch.FloatTensor)
+        self.memory = memory
+#        self.register_buffer('memory', torch.rand(outputSize, inputSize).mul_(2*stdv).add_(-stdv))
         self.memory = self.memory.cuda()
 
     def forward(self, x, y):

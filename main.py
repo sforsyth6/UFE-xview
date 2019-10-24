@@ -382,6 +382,7 @@ def main():
     if args.kmeans_opt:
         kmeans_opt(lemniscate,500)
 
+    print (torch.var(torch.t(lemniscate.memory), dim=1))
 		 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -914,6 +915,13 @@ def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
 
         # compute output
         feature = model(input)
+        y = torch.t(feature)
+        for num in range(len(y)):
+            var = torch.var(y[num])
+            if var > 1./(num+1.):
+                y[num,:] = torch.zeros((1,len(feature)))
+        features = torch.t(y)
+
         output = lemniscate(feature, index)
         loss = criterion(output, index) / args.iter_size
         #Backprop Apex optimizer loss
