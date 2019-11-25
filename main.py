@@ -135,10 +135,10 @@ def main():
     # Data loading code
     traindir = os.path.join(args.data, 'train')
     valdir = os.path.join(args.data, 'val')
-    # normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], # ImageNet stats
-    #                                  std=[0.229, 0.224, 0.225])
-    normalize = transforms.Normalize(mean=[0.234, 0.191, 0.159],  # xView stats
-                                     std=[0.173, 0.143, 0.127])
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], # ImageNet stats
+                                      std=[0.229, 0.224, 0.225])
+#    normalize = transforms.Normalize(mean=[0.234, 0.191, 0.159],  # xView stats
+#                                     std=[0.173, 0.143, 0.127])
 
     print("Creating datasets")
     cj = args.color_jit
@@ -146,7 +146,8 @@ def main():
         traindir,
         transforms.Compose([
             transforms.Resize((224, 224)),
-            transforms.ColorJitter(cj, cj, cj, cj), #transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
+#            transforms.Grayscale(3),
+#            transforms.ColorJitter(cj, cj, cj, cj), #transforms.ColorJitter(0.4, 0.4, 0.4, 0.4),
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
 	    transforms.RandomRotation(45),
@@ -307,8 +308,11 @@ def main():
             train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
             num_workers=args.workers, pin_memory=True, sampler=train_sampler)
         
-        lemniscate = NCEAverage(args.low_dim, ndata, args.nce_k, args.nce_t, args.nce_m)
-        criterion = NCECriterion(ndata).cuda()
+#        lemniscate = NCEAverage(args.low_dim, ndata, args.nce_k, args.nce_t, args.nce_m)
+#        criterion = NCECriterion(ndata).cuda()
+
+
+#    lemniscate = NCEAverage(args.low_dim, ndata, args.nce_k, args.nce_t, args.nce_m)
 
     if args.tsne_grid:
         tsne_grid(val_loader,model)
@@ -330,7 +334,9 @@ def main():
                 num+=1
             '''
             h_cluster(lemniscate, train_dataset, kmeans, topk, size) #, respred, lab, idx)
-   
+
+#    axis_explore(lemniscate, train_dataset)
+
 #    kmeans_opt(lemniscate, 5)
     
     if args.select:
@@ -379,16 +385,47 @@ def main():
             train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
             num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
+        
+        lemniscate = NCEAverage(args.low_dim, ndata, 20, args.nce_t, args.nce_m)
+
+        optimizer = torch.optim.SGD(model.parameters(), 0.1, momentum=0.1, weight_decay=0.00001)
+
+        optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.static_loss, verbose=False)
+
+        for epoch in range(50):
+            if args.distributed:
+                train_sampler.set_epoch(epoch)
+            adjust_learning_rate(optimizer, epoch)
+
+
+            if epoch % 1 == 0:
+                save_checkpoint({
+                    'epoch': epoch + 1,
+                    'arch': args.arch,
+                    'state_dict': model.state_dict(),
+                    'lemniscate': lemniscate,
+                    'optimizer' : optimizer.state_dict(),
+                })
+
+            train(train_loader, model, lemniscate, criterion, optimizer,epoch)
+ 
+        train_sampler = torch.utils.data.sampler.SubsetRandomSampler(sub_index)
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+            num_workers=args.workers, pin_memory=True, sampler=train_sampler)
+
+
+        lemniscate = NCEAverage(args.low_dim, ndata, args.nce_k, args.nce_t, args.nce_m)
+        optimizer = torch.optim.SGD(model.parameters(), args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.static_loss, verbose=False)
+
     if args.kmeans_opt:
         kmeans_opt(lemniscate,500)
 
-    print (torch.var(torch.t(lemniscate.memory), dim=1))
-		 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch)
- 
 
         if epoch % 1 == 0:
             # evaluate on validation set
@@ -424,6 +461,32 @@ def main():
 
     # evaluate KNN after last epoch
 #    kNN(model, lemniscate, train_loader, val_loader, args.K, args.nce_t)
+
+def axis_explore(lemniscate, train_dataset):
+    data = lemniscate.memory.data.cpu().numpy()
+    min_max = []
+    dataT = data.T
+
+    for i in range(len(dataT)):
+        l = np.sort(dataT[i,:])
+        h = list(range(0,len(data), int(round(len(data)/50.0))))
+        h.append(len(data)-1)
+        min_max.append(l[h])
+    
+    dim_exam = []
+
+    for num, y in enumerate(min_max):
+        dim = []
+        for j in y:
+            dim.append(np.abs(dataT[num]-j).argmin())
+        dim_exam.append(dim)
+
+    path = '/data/'
+    for num, d in enumerate(dim_exam): 
+        os.mkdir(path + 'dims/{}'.format(num))
+        for n,x in enumerate(d):
+            img = train_dataset.__getitem__(x)[3]
+            copyfile(path + 'train/all/' + img, path + 'dims/{0}/{1}'.format(num,n))
 
 def kmeans_opt(lemniscate, epoch):
     x = lemniscate.memory
@@ -915,12 +978,12 @@ def train(train_loader, model, lemniscate, criterion, optimizer, epoch):
 
         # compute output
         feature = model(input)
-        y = torch.t(feature)
-        for num in range(len(y)):
-            var = torch.var(y[num])
-            if var > 1./(num+1.):
-                y[num,:] = torch.zeros((1,len(feature)))
-        features = torch.t(y)
+#        y = torch.t(feature)
+#        for num in range(len(y)):
+#            var = torch.var(y[num])
+#            if var > (1./(num+1.)):
+#                y[num,:] = torch.zeros((1,len(feature)))
+#        features = torch.t(y)
 
         output = lemniscate(feature, index)
         loss = criterion(output, index) / args.iter_size
